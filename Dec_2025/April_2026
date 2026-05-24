@@ -1,0 +1,219 @@
+// ======================================================
+// SPI-5 (Dec 2025 → Apr 2026)
+// CHIRPS Rainfall
+// Google Earth Engine
+// ======================================================
+
+// -----------------------------
+// AOI
+// -----------------------------
+// Replace with your own AOI
+
+// var aoi = ee.FeatureCollection(...);
+
+// ======================================================
+// CHIRPS DAILY DATA
+// ======================================================
+
+var chirps = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
+                .filterBounds(aoi);
+
+// ======================================================
+// 5-MONTH ACCUMULATED RAINFALL FUNCTION
+// ======================================================
+
+function fiveMonthRain(year, month){
+
+  // End date
+  // Example:
+  // month = 5 means end = 2026-05-01
+  // which includes rainfall till Apr 30
+
+  var end = ee.Date.fromYMD(year, month, 1);
+
+  // Start date
+  var start = end.advance(-5, 'month');
+
+  // Rainfall accumulation
+  var rain = chirps
+                .filterDate(start, end)
+                .sum()
+                .rename('rain');
+
+  return rain.set({
+    'system:time_start': end.millis(),
+    'year': year,
+    'month': month
+  });
+}
+
+// ======================================================
+// BUILD CLIMATOLOGY COLLECTION
+// ======================================================
+
+var allMonths = [];
+
+// Build long-term collection
+for (var y = 2020; y <= 2026; y++) {
+
+  for (var m = 1; m <= 12; m++) {
+
+    allMonths.push(
+      fiveMonthRain(y, m)
+    );
+
+  }
+}
+
+// Convert to ImageCollection
+var rainCol = ee.ImageCollection(allMonths);
+
+// ======================================================
+// LONG-TERM MEAN & STANDARD DEVIATION
+// ======================================================
+
+var meanRain = rainCol.mean();
+
+var stdRain = rainCol.reduce(
+  ee.Reducer.stdDev()
+);
+
+// ======================================================
+// SPI-5 FOR APRIL 2026
+// Accumulation: Dec 2025 → Apr 2026
+// ======================================================
+
+var apr2026Rain = fiveMonthRain(2026, 5);
+
+// SPI Formula
+var spi = apr2026Rain
+            .subtract(meanRain)
+            .divide(stdRain)
+            .rename('SPI_5');
+
+// ======================================================
+// MASK EXTREME VALUES (OPTIONAL)
+// ======================================================
+
+spi = spi.updateMask(
+  spi.gte(-4).and(spi.lte(4))
+);
+
+// ======================================================
+// VISUALIZATION
+// ======================================================
+
+var spiVis = {
+  min: -3,
+  max: 3,
+  palette: [
+    '#8c510a', // extreme drought
+    '#d8b365',
+    '#f6e8c3',
+    '#f5f5f5', // normal
+    '#c7eae5',
+    '#5ab4ac',
+    '#01665e'  // wet
+  ]
+};
+
+// Add SPI layer
+Map.addLayer(
+  spi.clip(aoi),
+  spiVis,
+  'SPI-5 Apr 2026'
+);
+
+// Center map
+Map.centerObject(aoi, 6);
+
+// Basemap
+Map.setOptions('HYBRID');
+
+// ======================================================
+// HISTOGRAM
+// ======================================================
+
+var histChart = ui.Chart.image.histogram({
+  image: spi,
+  region: aoi,
+  scale: 5566,
+  maxBuckets: 256
+})
+.setOptions({
+
+  title: 'SPI-5 Histogram (Dec 2025 → Apr 2026)',
+
+  hAxis: {
+    title: 'SPI Value'
+  },
+
+  vAxis: {
+    title: 'Pixel Count'
+  },
+
+  series: {
+    0: {
+      color: 'blue'
+    }
+  }
+});
+
+print(histChart);
+
+// ======================================================
+// SPI STATISTICS
+// ======================================================
+
+var stats = spi.reduceRegion({
+
+  reducer: ee.Reducer.mean()
+            .combine({
+              reducer2: ee.Reducer.min(),
+              sharedInputs: true
+            })
+            .combine({
+              reducer2: ee.Reducer.max(),
+              sharedInputs: true
+            }),
+
+  geometry: aoi,
+  scale: 5566,
+  maxPixels: 1e13
+});
+
+print('SPI Statistics', stats);
+
+// ======================================================
+// LEGEND
+// ======================================================
+
+print('SPI Classification');
+print('< -2    : Extreme Drought');
+print('-2 to -1.5 : Severe Drought');
+print('-1.5 to -1 : Moderate Drought');
+print('-1 to 1    : Normal');
+print('1 to 1.5   : Moderately Wet');
+print('1.5 to 2   : Very Wet');
+print('> 2        : Extremely Wet');
+
+// ======================================================
+// EXPORT TO DRIVE
+// ======================================================
+
+Export.image.toDrive({
+
+  image: spi.clip(aoi),
+
+  description: 'SPI_5_April_2026',
+
+  folder: 'GEE_SPI',
+
+  fileNamePrefix: 'SPI5_Apr2026',
+
+  region: aoi,
+
+  scale: 5566,
+
+  maxPixels: 1e13
+});
